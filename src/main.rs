@@ -1,15 +1,18 @@
 
 use std::error::Error;
 use std::path::PathBuf;
-use std::ptr::{null, null_mut};
-use std::mem::{zeroed, transmute};
-
-use winapi::um::wincrypt::DATA_BLOB;
-use winapi::um::winbase::LocalFree;
-use winapi::um::dpapi::CryptUnprotectData;
+use std::ptr::null;
+use std::mem::zeroed;
 
 // 网上流传的Python脚本，Windows上都是这种解密方法
+#[cfg(windows)]
 fn decrypt_chrome(data: &[u8]) -> String {
+    use std::ptr::null_mut;
+    use std::mem::transmute;
+    use winapi::um::wincrypt::DATA_BLOB;
+    use winapi::um::winbase::LocalFree;
+    use winapi::um::dpapi::CryptUnprotectData;
+
     unsafe {
         let mut data_in: DATA_BLOB = zeroed();
         let mut data_out: DATA_BLOB = zeroed();
@@ -27,25 +30,31 @@ fn decrypt_chrome(data: &[u8]) -> String {
     }
 }
 
+#[cfg(not(windows))]
+fn decrypt_chrome(data: &[u8]) -> String {
+    String::from_utf8(data.into()).expect("解析chrome数据utf8错误")
+}
+
 fn data_local_dir() -> PathBuf {
     dirs::data_local_dir().expect("获取目录失败")
 }
 
-fn data_dir() -> PathBuf {
-    dirs::data_dir().expect("获取目录失败")
-}
+fn data_dir() -> PathBuf { dirs::data_dir().expect("获取DATA目录失败") }
+fn home_dir() -> PathBuf { dirs::home_dir().expect("获取HOME目录失败") }
 
 fn check_chrome() -> Result<(), Box<dyn Error>> {
-    let chrome = data_local_dir().join("Google").join("Chrome")
-                      .join("User Data").join("Default").join("Login Data");
+    let login_data = if cfg!(windows) {
+        data_local_dir().join("Google").join("Chrome").join("User Data").join("Default").join("Login Data")
+    } else {
+        home_dir().join(".config").join("google-chrome").join("Default").join("Login Data")
+    };
     let tmpath = std::env::temp_dir().join("tmplogindata");
-    std::fs::copy(&chrome, &tmpath).expect("复制文件失败");
+    std::fs::copy(&login_data, &tmpath).expect("复制到临时文件失败");
 
     let conn = sqlite::open(tmpath).expect("打开数据库失败");
     let mut cursor = conn.prepare("SELECT password_value, signon_realm, username_value, date_created FROM \"logins\"")?.cursor();
 
     while let Some(row) = cursor.next().expect("cursor") {
-        // println!("name = {}", row[0].as_string().unwrap());
         println!("[{}]  name: {} passwd: {}",
             row[1].as_string().unwrap(), row[2].as_string().unwrap(),
             decrypt_chrome(row[0].as_binary().unwrap())
@@ -69,8 +78,7 @@ fn decrypt_firefox(data: &str, profile: &str) -> String {
 
     let data = base64::decode(data).unwrap();
     unsafe {
-        // if NSS.is_none() { }
-        let lib = Library::new("nss3.dll").expect("NSS3.dll加载失败");
+        let lib = Library::new(if cfg!(windows) { "nss3.dll" } else { "libnss3.so" }).expect("NSS3加载失败");
         let NSS_Init: Symbol<unsafe extern "C" fn(*const u8) -> i32> = lib.get(b"NSS_Init").unwrap();
         let NSS_Shutdown: Symbol<unsafe extern "C" fn() -> i32> = lib.get(b"NSS_Shutdown").unwrap();
         let PK11_GetInternalKeySlot: Symbol<unsafe extern "C" fn() -> PK11SlotInfo> = lib.get(b"PK11_GetInternalKeySlot").unwrap();
@@ -105,10 +113,20 @@ fn decrypt_firefox(data: &str, profile: &str) -> String {
     }
 }
 
+#[cfg(windows)]
+fn firefox_data_path() -> PathBuf {
+    data_dir().join("Mozilla").join("Firefox")
+}
+
+#[cfg(not(windows))]
+fn firefox_data_path() -> PathBuf {
+    home_dir().join(".mozilla").join("firefox")
+}
+
 fn firefox_json(profile: &str) {
     use json::JsonValue;
 
-    let profile_path = data_dir().join("Mozilla").join("Firefox").join(profile);
+    let profile_path = firefox_data_path().join(profile);
     let path = profile_path.join("logins.json");
     if !path.exists() { return; }
 
@@ -129,7 +147,7 @@ fn firefox_json(profile: &str) {
 }
 
 fn firefox_sqlite(profile: &str) {
-    let profile_path = data_dir().join("Mozilla").join("Firefox").join(profile);
+    let profile_path = firefox_data_path().join(profile);
     let path = profile_path.join("signons.sqlite");
     if !path.exists() { return; }
 
@@ -147,7 +165,7 @@ fn firefox_sqlite(profile: &str) {
 fn check_firefox() -> Result<(), Box<dyn Error>> {
     use ini::Ini;
 
-    let p = data_dir().join("Mozilla").join("Firefox").join("profiles.ini");
+    let p = firefox_data_path().join("profiles.ini");
     if !p.exists() { return Ok(()); }
 
     let i = Ini::load_from_file(p)?;
