@@ -78,7 +78,8 @@ fn decrypt_firefox(data: &str, profile: &str) -> String {
 
     let data = base64::decode(data).unwrap();
     unsafe {
-        let lib = Library::new(if cfg!(windows) { "nss3.dll" } else { "libnss3.so" }).expect("NSS3加载失败");
+        let lib = Library::new(if cfg!(windows) { "nss3.dll" } else { "libnss3.so" })
+                    .expect("NSS3加载失败，使用-f选项指定firefox所在路径");
         let NSS_Init: Symbol<unsafe extern "C" fn(*const u8) -> i32> = lib.get(b"NSS_Init").unwrap();
         let NSS_Shutdown: Symbol<unsafe extern "C" fn() -> i32> = lib.get(b"NSS_Shutdown").unwrap();
         let PK11_GetInternalKeySlot: Symbol<unsafe extern "C" fn() -> PK11SlotInfo> = lib.get(b"PK11_GetInternalKeySlot").unwrap();
